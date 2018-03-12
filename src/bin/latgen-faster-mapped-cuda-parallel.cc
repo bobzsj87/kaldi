@@ -138,8 +138,6 @@ int main(int argc, char *argv[]) {
 
         LatticeFasterDecoderCuda decoder(decode_fst_cuda, config);
       {
-#pragma omp barrier
-        timer.Reset();
 
         for (; !loglike_reader.Done(); loglike_reader.Next()) {
             if(omp_get_thread_num()==0) {
@@ -149,6 +147,9 @@ int main(int argc, char *argv[]) {
             }
   nvtxRangePushA("whole decoding");
   nvtxRangePushA("before_decoding");
+          if (omp_get_thread_num() == 0) timer.Reset();
+#pragma omp barrier
+
           std::string utt = loglike_reader.Key();
           Matrix<BaseFloat> loglikes (loglike_reader.Value());
           loglike_reader.FreeCurrent();
@@ -163,19 +164,30 @@ int main(int argc, char *argv[]) {
   nvtxRangePop();
 
           double like;
+          Lattice lat;
           if (DecodeUtteranceLatticeFasterCuda(
                   decoder, decodable, trans_model, word_syms, utt,
                   acoustic_scale, determinize, allow_partial, &alignment_writer,
                   &words_writer, &compact_lattice_writer, &lattice_writer,
-                  &like)) {
+                  &like,
+                  &lat)) {
             tot_like += like;
             frame_count += loglikes.NumRows();
             num_success++;
           } else num_fail++;
-  nvtxRangePop();
-        }
 #pragma omp barrier
-      elapsed = timer.Elapsed();
+      if (omp_get_thread_num() == 0) elapsed += timer.Elapsed();
+  nvtxRangePop();
+#pragma omp critical
+      {
+              DecodeUtteranceLatticeFasterCudaOutput(
+                  decoder, decodable, trans_model, word_syms, utt,
+                  acoustic_scale, determinize, allow_partial, &alignment_writer,
+                  &words_writer, &compact_lattice_writer, &lattice_writer,
+                  &like,
+                  lat);
+      }
+        }
       }
       if(omp_get_thread_num()==0) delete decode_fst; // delete this only after decoder goes out of scope.
       }//omp parallel
