@@ -370,7 +370,7 @@ void CudaMergeVector<T>::load(CudaVector<T>*in, int sub_vec_num, cudaStream_t st
   int acc=0;
   uint32_t* vec_len;
   T** arr;
-  if (count_vec_d) vec_len=count_vec_d;
+  if (count_vec_d) vec_len=count_vec_d; //central mem
   else {
     KALDI_ERR<<"unsupported since 9cc21bbd868906d06d40d1b230d61690a584927e";
   }
@@ -851,6 +851,7 @@ void CudaMergeVector<T>::free() {
       //if havent seen, add into hash
       lookup_elem.tokenstate_idx=params.cur_toks.push_back(TokenState(cur_tok,nextstate,total_cost));
       const uint32_t* arc_offset=params.e_offsets;
+      assert(arc_offset);
       params.tok2scansum_numarc[lookup_elem.tokenstate_idx]=arc_offset[nextstate+1]
         -arc_offset[nextstate];
     }
@@ -1439,8 +1440,6 @@ void CudaMergeVector<T>::free() {
       (toks_buf_[prev_idx]).copy_data_to_host(stream_copy[prev_idx], NULL, false);
     }
     cudaCheckError();
-
-
     //if (islast) 
       //cudaStreamSynchronize(stream_copy); //else overlap CPU&GPU
     cudaStreamSynchronize(stream_comp);
@@ -1450,6 +1449,7 @@ void CudaMergeVector<T>::free() {
   void CudaLatticeDecoder::PreProcessLattices(TokenVector** pprev_toks, 
     void** pprev_arcs, int *num_arcs, bool islast, int* lat_frame, uint dec_frame) {
     PUSH_RANGE("PreProcessLattices_and_Wait",0)
+    cudaCheckError();
     uint prev_idx=(dec_frame-1)%LAT_BUF_SIZE;
     uint prev_idx2=(dec_frame-1)%(LAT_BUF_SIZE-1);
     uint pprev_idx=(dec_frame-2)%LAT_BUF_SIZE;
@@ -1460,9 +1460,12 @@ void CudaMergeVector<T>::free() {
       cur_vec.load(lat_arcs_sub_vec_buf_[prev_idx], 
           sub_vec_num_, stream_copy[prev_idx], total_threads,
           lat_arcs_sub_vec_buf_count_[prev_idx][1]);
+//cudaStreamSynchronize(stream_copy[prev_idx]);//debug
       cudaCheckError();
       cur_vec.copy_size_to_host(stream_copy[prev_idx]);
       (toks_buf_[prev_idx]).copy_size_to_host(stream_copy[prev_idx]);
+//cudaStreamSynchronize(stream_copy[prev_idx]);//debug
+      cudaCheckError();
     }
     //stream_copy[pprev_idx]
     cudaStreamSynchronize(stream_copy[pprev_idx]);
