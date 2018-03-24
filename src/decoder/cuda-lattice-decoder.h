@@ -32,10 +32,10 @@
 //#define __DEBUG__
 #ifdef __DEBUG__
 #define VERBOSE 5
-#define DEBUG(format,...) printf(format, ##__VA_ARGS__)
+#define GPU_PRINTF(format,...) printf(format, ##__VA_ARGS__)
 #else
 #define VERBOSE 0
-#define DEBUG(format,...)
+#define GPU_PRINTF(format,...)
 #endif
 
 #include <cuda_runtime.h>
@@ -435,15 +435,6 @@ typedef CudaVector<TokenState> TokenVector;
   // It returns true if the output lattice was nonempty (i.e. had states in it);
   // using the return value is deprecated.
   bool GetBestPath(Lattice *fst_out, bool use_final_probs = true) const;
-  
-  /// *** The next functions are from the "new interface". ***
-  
-  /// FinalRelativeCost() serves the same function as ReachedFinal(), but gives
-  /// more information.  It returns the difference between the best (final-cost plus
-  /// cost) of any token on the final frame, and the best cost of any token
-  /// on the final frame.  If it is infinity it means no final-states were present
-  /// on the final frame.  It will usually be nonnegative.
-  BaseFloat FinalRelativeCost() const;
 
   /// InitDecoding initializes the decoding, and should only be used if you
   /// intend to call AdvanceDecoding().  If you call Decode(), you don't need
@@ -457,11 +448,6 @@ TokenVector**last_tokv,  Token** toks_buf, int** toks_sidx, LatLink** arcs_buf, 
   void CallLaunchPruneActiveTokens(cudaStream_t wait_st, 
     cudaStream_t st, float ratio);
 
-  #if 0
-  void PostProcessLattices(bool islast, uint dec_frame);
-  void PreProcessLattices(TokenVector** pprev_toks, 
-    void** buf_arcs, int *num_arcs, bool islast, int* lat_frame, uint dec_frame);
-  #endif
   void PreProcessTokens();
 
   /// Returns the number of frames already decoded.  

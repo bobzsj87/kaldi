@@ -95,7 +95,27 @@ DEVICE void acquire_semaphore(volatile int *lock){
     //if (++cnt==0) release_semaphore(lock); //deadlock hack
   }
   }
-  inline DEVICE void atomicMin(float *address, float val);
+
+  inline DEVICE void atomicMin(double *address, double val) {
+    unsigned long long *address_ull = (unsigned long long *)address;
+
+    double minval = *address;
+
+    while (val < minval) {  //if my value is less than minimum
+      minval = val;         //update the minimum to my value locally
+      val = __longlong_as_double(atomicExch(address_ull, __double_as_longlong(val))); //write minimum and read back value
+    } //if the new value is < the minimum I wrote I need to try again.
+  }
+  inline DEVICE void atomicMin(float *address, float val) {
+    unsigned int *address_ui = (unsigned int  *)address;
+
+    float minval = *address;
+
+    while (val < minval) {  //if my value is less than minimum
+      minval = val;         //update the minimum to my value locally
+      val = __uint_as_float(atomicExch(address_ui, __float_as_uint(val))); //write minimum and read back value
+    } //if the new value is < the minimum I wrote I need to try again.
+  }
 
 
   template <typename T>
@@ -331,7 +351,6 @@ template<typename T>
   /**************************************End CudaVector Implementation**********************************/
     DEVICE void LatticePruner::init_buf_before_cp() {
       if (threadIdx.x!=0||blockIdx.x!=0) return;
-      //*arcs_buf_after_pr_size_arr_used_d=prune_interval_/sizeof(int)*2;
       *arcs_apr_used_d=0;
     }
     DEVICE int LatticePruner::merge_arc(LatLink* arc) {
@@ -457,7 +476,7 @@ template <int verbose>
       }
       //see copy_data_to_host
       assert(*arcs_apr_used_d<arcs_buf_before_pr_size*PRUNE_RATIO_ASSUME);
-      if (verbose>2&&rank0) DEBUG("PRt: %i %i\n", arcs_bpr_sidx_d[frame+1], *arcs_apr_used_d);
+      if (verbose>2&&rank0) GPU_PRINTF("PRt: %i %i\n", arcs_bpr_sidx_d[frame+1], *arcs_apr_used_d);
     }
     inline DEVICE Token* LatticePruner::ActiveToksMap(void* p, bool check, int iframe) const {
       int frame, id;
@@ -495,7 +514,7 @@ template <int verbose>
       int rank0=threadIdx.x==0&&blockIdx.x==0?1:0;
       
         __grid_sync_nv_internal(barrier_);
-      if (rank0&&verbose>3) printf("%i %i\n",c++, GetSize(toks_bpr_sidx_d,frame-1));
+      if (rank0&&verbose>3) GPU_PRINTF("%i %i\n",c++, GetSize(toks_bpr_sidx_d,frame-1));
       {
         int tid=threadIdx.x+blockIdx.x*blockDim.x;
         int size=GetSize(toks_bpr_sidx_d,frame-1);
@@ -507,10 +526,10 @@ template <int verbose>
           *modified_d=1;
           prev_cidx=*arcs_apr_used_d;
         }
-        if (rank0&&verbose>3) printf("%i %p\n",c++,barrier_);
+        if (rank0&&verbose>3) GPU_PRINTF("%i %p\n",c++,barrier_);
         __grid_sync_nv_internal(barrier_);
       }
-      if (rank0&&verbose>3) printf("%i\n",c++);
+      if (rank0&&verbose>3) GPU_PRINTF("%i\n",c++);
 
       //update arc //need some loop here
       int cnt=0;
@@ -531,7 +550,7 @@ template <int verbose>
           else {
             //debug
             if (link_extra_cost<-1) {
-              DEBUG("%i %f %f %f %f %f\n",frame,next_tok->extra_cost, tok->cost_, link->acoustic_cost, link->graph_cost, next_tok->cost_);
+              GPU_PRINTF("%i %f %f %f %f %f\n",frame,next_tok->extra_cost, tok->cost_, link->acoustic_cost, link->graph_cost, next_tok->cost_);
             }
             if (link_extra_cost < tok->extra_cost) {
               atomicMin(&tok->extra_cost,link_extra_cost);
@@ -543,7 +562,7 @@ template <int verbose>
         //if we do this always in 25 frames, we might dont need this
         //some flag to show whether it is changed   
       }
-      if (rank0&&verbose>3) DEBUG("cnt: %i\n",cnt);
+      if (rank0&&verbose>3) GPU_PRINTF("cnt: %i\n",cnt);
       {
         int tid=threadIdx.x+blockIdx.x*blockDim.x;
         int size=GetSize(arcs_bpr_sidx_d,frame);
@@ -583,13 +602,13 @@ template <int verbose>
       if (merge&&rank0) {
           int& size_arc_of_frame=arcs_apr_size_d[frame];
           size_arc_of_frame=*arcs_apr_used_d-prev_cidx;
-          if (verbose>3) DEBUG("PR %i %i %i\n",frame, 
+          if (verbose>3) GPU_PRINTF("PR %i %i %i\n",frame, 
             GetSize(arcs_bpr_sidx_d,frame), size_arc_of_frame);
           //size_tok_of_frame[f-1]=cidx-prev_cidx
           //prev_cidx=cidx
       }
       __grid_sync_nv_internal(barrier_);
-        if (rank0&&verbose>3) printf("%i %p\n",c++,barrier_);
+        if (rank0&&verbose>3) GPU_PRINTF("%i %p\n",c++,barrier_);
     }
     //#define GET_ARC_BUF_HOST_BY_FRAME(frame) (arcs_apr_h+arcs_apr_h_used)
 
@@ -1158,69 +1177,12 @@ template <int verbose>
     return false;
   }
 
-  BaseFloat CudaLatticeDecoder::FinalRelativeCost() const {
-    // as a special case, if there are no active tokens at all (e.g. some kind of
-    // pruning failure), return infinity.
-    CostType infinity = std::numeric_limits<CostType>::infinity();
-    if ((*cur_toks_).empty())
-      return infinity;
-    CostType best_cost = infinity,
-             best_cost_with_final = infinity;
-
-
-    //for each active token
-    //compute minimum cost
-    for (int i=0;i<(*cur_toks_).size();i++) {
-      TokenState ts = (*cur_toks_)[i];
-      StateId state = ts.state;
-      CostType cost = ts.token->cost_;
-
-      // Note: Plus is taking the minimum cost, since we're in the tropical
-      // semiring.
-      best_cost = std::min(best_cost, cost);
-      best_cost_with_final = std::min(best_cost_with_final,
-          cost +
-          fst_.Final(state));
-          //fst_.Final(state).Value());
-    }
-
-    BaseFloat extra_cost = best_cost_with_final - best_cost;
-    if (extra_cost != extra_cost) { // NaN.  This shouldn't happen; it indicates some
-      // kind of error, most likely.
-      KALDI_WARN << "Found NaN (likely search failure in decoding)";
-      return infinity;
-    }
-    // Note: extra_cost will be infinity if no states were final.
-    return extra_cost;
-  }
-
   // Outputs an FST corresponding to the single best path
   // through the lattice.
   bool CudaLatticeDecoder::GetBestPath(Lattice *fst_out, bool use_final_probs) const {
     nvtxRangePushA("GetBestPath");
     assert(0);
     return true;
-  }
-
-  inline DEVICE void atomicMin(double *address, double val) {
-    unsigned long long *address_ull = (unsigned long long *)address;
-
-    double minval = *address;
-
-    while (val < minval) {  //if my value is less than minimum
-      minval = val;         //update the minimum to my value locally
-      val = __longlong_as_double(atomicExch(address_ull, __double_as_longlong(val))); //write minimum and read back value
-    } //if the new value is < the minimum I wrote I need to try again.
-  }
-  inline DEVICE void atomicMin(float *address, float val) {
-    unsigned int *address_ui = (unsigned int  *)address;
-
-    float minval = *address;
-
-    while (val < minval) {  //if my value is less than minimum
-      minval = val;         //update the minimum to my value locally
-      val = __uint_as_float(atomicExch(address_ui, __float_as_uint(val))); //write minimum and read back value
-    } //if the new value is < the minimum I wrote I need to try again.
   }
 
   void CudaLatticeDecoder::ComputeLogLikelihoods(DecodableInterface *decodable) {
@@ -1320,7 +1282,7 @@ template <int verbose>
       if(group.thread_rank()==0) { //thread 0 nominated to get new token
         i=atomicAdd(params.pe_idx,1);      //get token index
         if (params.verbose>3 && i%1000==0) {
-          DEBUG("E: %i %i %i\n", i, threadIdx.x, blockIdx.x);
+          GPU_PRINTF("E: %i %i %i\n", i, threadIdx.x, blockIdx.x);
         }
       }
       i=group.shfl(i,0);           //broadcast token index
@@ -1397,7 +1359,7 @@ template <int verbose>
       if(group.thread_rank()==0) { //thread 0 nominated to get new token
         i=atomicAdd(params.ne_idx,1);      //get token index
         if (params.verbose>3 && i%1000==0) {
-          DEBUG("NE: %i %i %i\n", i, threadIdx.x, blockIdx.x);
+          GPU_PRINTF("NE: %i %i %i\n", i, threadIdx.x, blockIdx.x);
         }
       }
       i=group.shfl(i,0);           //broadcast token index
@@ -1418,7 +1380,7 @@ template <int verbose>
 
         CostType total_cost = tok->cost_ + weight;
 
-      if (params.verbose>4) DEBUG("D: %i %i %i %i %i \n",threadIdx.x, threadIdx.y, j, blockIdx.x,i);
+      if (params.verbose>4) GPU_PRINTF("D: %i %i %i %i %i \n",threadIdx.x, threadIdx.y, j, blockIdx.x,i);
         if (next_tok.cost_ <= cutoff) {
           TokenState *next_ts=NULL;
           Token *cur_tok = FindOrAddTokenArc(params, nextstate, total_cost, 
@@ -1445,76 +1407,27 @@ template <int verbose>
       }
 
     }
-      if (params.verbose>4) DEBUG("ED: %i %i %i \n",threadIdx.x, group.thread_rank(), blockIdx.x);
-  }
-
-  //Loop through all tokens repeatdly updating costs until nothing changes
-  __launch_bounds__(64,64)
-  __global__ void processNonEmittingTokens_cg(processTokens_params params) {
-
-    //auto grid = cooperative_groups::this_grid();
-    //double buffer to reduce synchronization
-    volatile int *modified0 = params.modified;    //modified flag for current iteration
-    volatile int *modified1 = params.modified+1;  //modified flag for next/last iteration
-    *modified1 = false;
-
-    CostType cutoff=*params.cutoff;
-    do {
-
-      uint32_t size = params.cur_toks.size();
-
-      *params.ne_idx=0;
-      //grid.sync();  
-      __grid_sync_nv_internal(params.barrier);
-
-      //swap buffers
-      swap(modified0,modified1);
-
-      *modified1 = false;
-
-      processNonEmittingTokens_function<32,2>(params,cutoff,size,modified0);
-
-      //grid.sync();
-      __grid_sync_nv_internal(params.barrier);
-
-    } while ((*modified0)==true);
-    
-    //prepare for next iteration
-    *params.cutoff = INFINITY;
-    //proc lattice before allocate new toks to TokenState
-    params.lattice_pruner.collect_tok_per_frame(params.cur_toks.mem_d, 
-                  *params.cur_toks.count_d, params.frame);
-    // TODO: currently we won't add arc in addOneToken and assume no in processNonEmittingTokens_function
- 
-    __grid_sync_nv_internal(params.barrier); 
-    
-    allocateNewTokens_function(params.current_tokens_lookup, params.cur_toks, params.allocator);
-    __grid_sync_nv_internal(params.barrier);
-    if(threadIdx.x==0 && blockIdx.x==0)
-      params.allocator.advanceFront(params.cur_toks.size());
+      if (params.verbose>4) GPU_PRINTF("ED: %i %i %i \n",threadIdx.x, group.thread_rank(), blockIdx.x);
   }
 
   __launch_bounds__(64,64)
-  __global__ void processTokens_cg(processTokens_params params) {
-//    auto grid = cooperative_groups::this_grid();
-
+  __global__ void processTokens_cg(processTokens_params params, bool is_init=false) {
     bool rank0 = blockIdx.x==0 && threadIdx.x==0;
-    int p=0;
 
-    findBestCutoff_function<32,2>(params);
-    //grid.sync();
-    __grid_sync_nv_internal(params.barrier);
+    if (!is_init) {
+      findBestCutoff_function<32,2>(params);
+      __grid_sync_nv_internal(params.barrier);
+    }
    
-   
-
     volatile int *modified0 = params.modified;    //modified flag for current iteration
     volatile int *modified1 = params.modified+1;  //modified flag for next/last iteration
     *modified1 = false;
     CostType cutoff=*params.cutoff;
 
-    processEmittingTokens_function<32,2>(params);
-    //grid.sync();
-    __grid_sync_nv_internal(params.barrier);  //ensure cur_toks size is final
+    if (!is_init) {
+      processEmittingTokens_function<32,2>(params);
+      __grid_sync_nv_internal(params.barrier);  //ensure cur_toks size is final
+    }
   
     int tok_E;
     int itv = params.verbose>2? 1: 10;
@@ -1543,7 +1456,7 @@ template <int verbose>
     } while ((*modified0)==true);
 
     if (rank0&&params.verbose>1&&params.frame%itv==0) 
-          DEBUG("TK: %i %i %i %f\n", params.frame, tok_E, params.cur_toks.size(), cutoff);
+          GPU_PRINTF("TK: %i %i %i %f\n", params.frame, tok_E, params.cur_toks.size(), cutoff);
 
 
     //proc lattice before allocate new toks to TokenState
@@ -1626,15 +1539,7 @@ template <int verbose>
 
     processTokens_params params;
     initParams(params);
-
-
-#if 0
-    void *args[] = { (void*) &params };
-
-    cudaLaunchCooperativeKernel((void*)processNonEmittingTokens_cg, blocks, threads, args, 0, stream_comp);
-#else
-    processNonEmittingTokens_cg<<<blocks,threads,0,stream_comp>>>(params);
-#endif
+    processTokens_cg<<<blocks,threads,0,stream_comp>>>(params, true);
 
     cudaCheckError();
     nvtxRangePop();
