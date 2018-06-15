@@ -290,8 +290,8 @@ DEVICE static inline void _process_emitting_tokens(processTokens_params* params)
         // get cur_te&new_token_pack here
         // details in the definition of pack_cost_idx_into_uint64()
         uint64 new_token_pack = pack_cost_idx_into_uint64(-total_cost, update_idx);
-        uint64 ret = atomicMax((unsigned long long *)token_pack,
-                               (unsigned long long)new_token_pack);
+        uint64 ret = atomicMax((unsigned long long int *)token_pack,
+                               (unsigned long long int)new_token_pack);
         if (ret < new_token_pack) {
           Token* cur_te = params->token_per_arc + update_idx;
           fast_store8(cur_te, &(Token(acoustic_cost + weight, tok)));
@@ -378,8 +378,8 @@ DEVICE static inline void _process_nonemitting_tokens(processTokens_params
                               0, &ts, j, true, &next_ts, &token_pack,
                               &update_idx, false);
         uint64 new_token_pack = pack_cost_idx_into_uint64(-total_cost, update_idx);
-        uint64 ret = atomicMax((unsigned long long *)token_pack,
-                               (unsigned long long)new_token_pack);
+        uint64 ret = atomicMax((unsigned long long int *)token_pack,
+                               (unsigned long long int)new_token_pack);
         if (ret < new_token_pack) {
           assert(update_idx < params->max_lat_arc_per_frame);
           Token* cur_te = params->token_per_arc + update_idx;
@@ -435,7 +435,7 @@ static void _add_initial_token(processTokens_params params, StateId state) {
   Token* cur_te = params.token_per_arc + update_idx;
   params.token_per_arc_update[update_idx] = 1;
   fast_store8(cur_te, &(Token(0, NULL)));
-  atomicMax((unsigned long long *)token_pack, (unsigned long long)new_token_pack);
+  atomicMax((unsigned long long int *)token_pack, (unsigned long long int)new_token_pack);
   params.cur_toks.StoreDataByPackIdx(params.token_per_arc,
                                      params.token_per_arc_update, params.numArcs,
                                      &(params.lattice_processor));
